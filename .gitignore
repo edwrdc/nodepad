@@ -3,6 +3,9 @@ __v0_runtime_loader.js
 __v0_devtools.tsx
 __v0_jsx-dev-runtime.ts
 
+# Design system (local only, not deployed)
+app/design-system/
+
 # Common ignores
 node_modules/
 .next/
