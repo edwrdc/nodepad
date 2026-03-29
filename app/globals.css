@@ -208,7 +208,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmer 1.6s ease-in-out infinite;
+  animation: shimmer 3.5s ease-in-out infinite;
 }
 
 @keyframes spin {
