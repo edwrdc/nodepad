@@ -12,7 +12,7 @@ export interface AIModel {
   groundingModelId?: string
 }
 
-export type AIProvider = "openrouter" | "openai"
+export type AIProvider = "openrouter" | "openai" | "zai"
 
 export interface AIProviderPreset {
   id: AIProvider
@@ -36,6 +36,13 @@ export const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
     baseUrl: "https://api.openai.com/v1",
     keyUrl: "https://platform.openai.com/api-keys",
     keyPlaceholder: "sk-...",
+  },
+  {
+    id: "zai",
+    label: "Z.ai",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    keyUrl: "https://z.ai",
+    keyPlaceholder: "Your Z.ai API key",
   },
 ]
 
@@ -121,8 +128,40 @@ export const OPENAI_MODELS: AIModel[] = [
   },
 ]
 
+export const ZAI_MODELS: AIModel[] = [
+  {
+    id: "glm-4.5",
+    label: "GLM-4.5",
+    shortLabel: "GLM-4.5",
+    description: "Fast, cost-efficient Z.ai model",
+    supportsGrounding: false,
+  },
+  {
+    id: "glm-4.7",
+    label: "GLM-4.7",
+    shortLabel: "GLM-4.7",
+    description: "Strong reasoning, 200K context",
+    supportsGrounding: false,
+  },
+  {
+    id: "glm-5",
+    label: "GLM-5",
+    shortLabel: "GLM-5",
+    description: "Z.ai flagship model",
+    supportsGrounding: false,
+  },
+  {
+    id: "glm-5-turbo",
+    label: "GLM-5 Turbo",
+    shortLabel: "GLM-5 Turbo",
+    description: "Fast, capable, community tested",
+    supportsGrounding: false,
+  },
+]
+
 export function getModelsForProvider(provider: AIProvider): AIModel[] {
   if (provider === "openai") return OPENAI_MODELS
+  if (provider === "zai")    return ZAI_MODELS
   return AI_MODELS // openrouter + safe fallback for any stale localStorage value
 }
 
@@ -172,6 +211,7 @@ export function loadAIConfig(): AIConfig | null {
   // OpenRouter-prefixed id (e.g. "openai/gpt-4o") after switching to OpenAI —
   // that string won't match any entry in OPENAI_MODELS so we fall back to "gpt-4o".
   const modelId = model?.id ?? models[0]?.id ?? s.modelId ?? DEFAULT_MODEL_ID
+  // Z.ai does not support grounding; only openrouter and openai do
   const supportsGrounding =
     (s.provider === "openrouter" || s.provider === "openai") &&
     s.webGrounding &&

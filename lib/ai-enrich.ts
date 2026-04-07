@@ -148,6 +148,71 @@ export interface EnrichResult {
   sources?: { url: string; title: string; siteName: string }[]
 }
 
+// ── Robust JSON parsing ───────────────────────────────────────────────────────
+// Models sometimes return truncated or escaped JSON. These helpers try harder
+// before giving up, falling back to regex field extraction as a last resort.
+
+function decodeJsonishString(value: string): string {
+  return value
+    .replace(/\\r/g, "\r")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+    .trim()
+}
+
+function extractJsonCandidate(content: string): string | null {
+  // Prefer fenced code blocks first
+  const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/)
+  if (fenceMatch) return fenceMatch[1].trim()
+  // Fall back to outermost { ... }
+  const start = content.indexOf("{")
+  const end   = content.lastIndexOf("}")
+  if (start !== -1 && end > start) return content.slice(start, end + 1).trim()
+  return null
+}
+
+function coerceLooseEnrichResult(content: string): EnrichResult | null {
+  // Last-resort regex extraction for truncated responses
+  const contentTypeMatch = content.match(/"contentType"\s*:\s*"([^"]+)"/)
+  const categoryMatch    = content.match(/"category"\s*:\s*"([^"]+)"/)
+  const annotationMatch  = content.match(
+    /"annotation"\s*:\s*"([\s\S]*?)(?:"\s*,\s*"(?:confidence|influencedByIndices|isUnrelated|mergeWithIndex)"|\s*$)/
+  )
+  if (!contentTypeMatch || !categoryMatch || !annotationMatch) return null
+
+  const confidenceRaw    = content.match(/"confidence"\s*:\s*(null|-?\d+(?:\.\d+)?)/)?.[1]
+  const influencedRaw    = content.match(/"influencedByIndices"\s*:\s*\[([^\]]*)\]/)?.[1]
+  const isUnrelatedRaw   = content.match(/"isUnrelated"\s*:\s*(true|false)/)?.[1]
+  const mergeRaw         = content.match(/"mergeWithIndex"\s*:\s*(null|-?\d+)/)?.[1]
+
+  const influencedByIndices = influencedRaw
+    ? influencedRaw.split(",").map(p => Number(p.trim())).filter(Number.isFinite)
+    : []
+
+  return {
+    contentType:         contentTypeMatch[1] as ContentType,
+    category:            decodeJsonishString(categoryMatch[1]),
+    annotation:          decodeJsonishString(annotationMatch[1]),
+    confidence:          confidenceRaw == null || confidenceRaw === "null" ? null : Number(confidenceRaw),
+    influencedByIndices,
+    isUnrelated:         isUnrelatedRaw === "true",
+    mergeWithIndex:      mergeRaw == null || mergeRaw === "null" ? null : Number(mergeRaw),
+  }
+}
+
+function parseEnrichResult(content: string): EnrichResult | null {
+  const candidate = extractJsonCandidate(content) ?? content.trim()
+  try {
+    return JSON.parse(candidate) as EnrichResult
+  } catch {
+    return coerceLooseEnrichResult(candidate)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function enrichBlockClient(
   text: string,
   context: EnrichContext[],
@@ -264,22 +329,24 @@ You have live web access. For this note type, include 1–2 real source citation
     throw new Error(`AI enrich error (${config.provider}) ${response.status}: ${err}`)
   }
 
-  const data = await response.json()
-  const content = data.choices?.[0]?.message?.content
+  let data: Record<string, unknown>
+  try {
+    data = await response.json()
+  } catch {
+    throw new Error(
+      `AI enrich error (${config.provider}): response was not valid JSON. The provider may have timed out or returned a truncated response.`
+    )
+  }
+
+  const content = (data.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content
   if (!content) throw new Error("No content in AI response")
 
-  let result: EnrichResult
-  try {
-    result = JSON.parse(content)
-  } catch {
-    const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/)
-    if (fenceMatch) {
-      result = JSON.parse(fenceMatch[1].trim())
-    } else {
-      throw new Error(
-        `AI returned invalid JSON. The model may not support structured output.\n\nRaw response: ${content.substring(0, 200)}`
-      )
-    }
+  const result = parseEnrichResult(content)
+  if (!result) {
+    const finishReason = (data.choices as Array<{ finish_reason?: string }>)?.[0]?.finish_reason
+    throw new Error(
+      `AI returned unparseable JSON.${finishReason ? ` Finish reason: ${finishReason}.` : ""} Raw: ${content.substring(0, 200)}`
+    )
   }
   if (result.confidence != null) {
     result.confidence = Math.min(100, Math.max(0, Math.round(result.confidence)))
@@ -289,7 +356,7 @@ You have live web access. For this note type, include 1–2 real source citation
   // Both OpenRouter :online and OpenAI search-preview return citations as
   // annotations on the message object — not inside the JSON content itself.
   const annotations: Array<{ type: string; url_citation?: { url: string; title?: string } }> =
-    data.choices?.[0]?.message?.annotations ?? []
+    ((data.choices as Array<{ message?: { annotations?: unknown[] } }>)?.[0]?.message?.annotations ?? []) as Array<{ type: string; url_citation?: { url: string; title?: string } }>
   const seen = new Set<string>()
   const sources = annotations
     .filter(a => a.type === "url_citation" && a.url_citation?.url)

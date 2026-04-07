@@ -67,8 +67,15 @@ Return ONLY valid JSON:
     throw new Error(`AI ghost error (${config.provider}) ${response.status}: ${err}`)
   }
 
-  const data = await response.json()
-  const rawContent = data.choices?.[0]?.message?.content
+  let data: Record<string, unknown>
+  try {
+    data = await response.json()
+  } catch {
+    throw new Error(
+      `AI ghost error (${config.provider}): response was not valid JSON. The provider may have timed out or returned a truncated response.`
+    )
+  }
+  const rawContent = (data.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content
   if (!rawContent) throw new Error("No content in AI response")
 
   // Defensive parse
