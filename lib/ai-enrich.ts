@@ -1,7 +1,8 @@
 "use client"
 
 import { detectContentType } from "@/lib/detect-content-type"
-import { loadAIConfig, getBaseUrl, getProviderHeaders, getModelsForProvider } from "@/lib/ai-settings"
+import { loadAIConfig, getPreset, getModelsForProvider } from "@/lib/ai-settings"
+import { requestAIText } from "@/lib/ai-client"
 import type { ContentType } from "@/lib/content-types"
 
 // ── Language detection ────────────────────────────────────────────────────────
@@ -228,17 +229,18 @@ export async function enrichBlockClient(
 
   let model = config.modelId
   let webSearchOptions: Record<string, unknown> | undefined
+  const providerPreset = getPreset(config.provider)
   if (shouldGround) {
-    if (config.provider === "openrouter") {
+    if (providerPreset.groundingStrategy === "openrouter-online") {
       if (!model.endsWith(":online")) model = `${model}:online`
-    } else if (config.provider === "openai") {
+    } else if (providerPreset.groundingStrategy === "openai-search-preview") {
       const modelDef = getModelsForProvider("openai").find(m => m.id === config.modelId)
       if (modelDef?.groundingModelId) model = modelDef.groundingModelId
       webSearchOptions = {}
     }
   }
 
-  const supportsJsonSchema = config.provider === "openrouter" || config.provider === "openai"
+  const supportsJsonSchema = providerPreset.supportsJsonSchema
   // gpt-*-search-preview models have known issues with strict json_schema + web_search_options;
   // fall back to json_object mode (guaranteed valid JSON, no schema enforcement)
   const useStrictSchema = supportsJsonSchema && !webSearchOptions
@@ -300,52 +302,32 @@ You have live web access. For this note type, include 1–2 real source citation
   const langDirective = `[RESPOND IN: ${language}]\n`
   const userMessage = `${langDirective}<note_to_enrich>${safeText}</note_to_enrich>${urlContext}${categoryContext}${forcedTypeContext}${globalContext}`
 
-  const baseUrl = getBaseUrl(config)
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: getProviderHeaders(config),
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user",   content: userMessage },
-      ],
-      // OpenAI search-preview models reject both response_format AND temperature;
-      // when web_search_options is present, omit both and rely on the schemaHint
-      // in the system prompt to get structured JSON output.
-      ...(webSearchOptions === undefined
-        ? {
-            response_format: useStrictSchema
-              ? { type: "json_schema", json_schema: JSON_SCHEMA }
-              : { type: "json_object" },
-            temperature: 0.1,
-          }
-        : { web_search_options: webSearchOptions }),
-    }),
+  const aiResult = await requestAIText({
+    config,
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+    // OpenAI search-preview models reject both response_format AND temperature;
+    // when web_search_options is present, omit both and rely on the schemaHint
+    // in the system prompt to get structured JSON output.
+    responseFormat: webSearchOptions === undefined
+      ? (useStrictSchema
+          ? { type: "json_schema", json_schema: JSON_SCHEMA }
+          : { type: "json_object" })
+      : undefined,
+    temperature: webSearchOptions === undefined ? 0.1 : undefined,
+    webSearchOptions,
+    maxOutputTokens: 2048,
   })
 
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`AI enrich error (${config.provider}) ${response.status}: ${err}`)
-  }
-
-  let data: Record<string, unknown>
-  try {
-    data = await response.json()
-  } catch {
-    throw new Error(
-      `AI enrich error (${config.provider}): response was not valid JSON. The provider may have timed out or returned a truncated response.`
-    )
-  }
-
-  const content = (data.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content
-  if (!content) throw new Error("No content in AI response")
+  const content = aiResult.text
 
   const result = parseEnrichResult(content)
   if (!result) {
-    const finishReason = (data.choices as Array<{ finish_reason?: string }>)?.[0]?.finish_reason
     throw new Error(
-      `AI returned unparseable JSON.${finishReason ? ` Finish reason: ${finishReason}.` : ""} Raw: ${content.substring(0, 200)}`
+      `AI returned unparseable JSON. Raw: ${content.substring(0, 200)}`
     )
   }
   if (result.confidence != null) {
@@ -355,8 +337,7 @@ You have live web access. For this note type, include 1–2 real source citation
   // Extract clickable source links from response annotations.
   // Both OpenRouter :online and OpenAI search-preview return citations as
   // annotations on the message object — not inside the JSON content itself.
-  const annotations: Array<{ type: string; url_citation?: { url: string; title?: string } }> =
-    ((data.choices as Array<{ message?: { annotations?: unknown[] } }>)?.[0]?.message?.annotations ?? []) as Array<{ type: string; url_citation?: { url: string; title?: string } }>
+  const annotations: Array<{ type: string; url_citation?: { url: string; title?: string } }> = aiResult.annotations ?? []
   const seen = new Set<string>()
   const sources = annotations
     .filter(a => a.type === "url_citation" && a.url_citation?.url)

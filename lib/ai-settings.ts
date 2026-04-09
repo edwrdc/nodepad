@@ -12,7 +12,11 @@ export interface AIModel {
   groundingModelId?: string
 }
 
-export type AIProvider = "openrouter" | "openai" | "zai"
+export type AIProviderApiFamily = "openai-completions" | "anthropic-messages"
+
+export type AIGroundingStrategy = "none" | "openrouter-online" | "openai-search-preview"
+
+export type AIProvider = "openrouter" | "openai" | "zai" | "kimi-coding"
 
 export interface AIProviderPreset {
   id: AIProvider
@@ -20,34 +24,9 @@ export interface AIProviderPreset {
   baseUrl: string
   keyUrl: string
   keyPlaceholder: string
-}
-
-export const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
-  {
-    id: "openrouter",
-    label: "OpenRouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    keyUrl: "https://openrouter.ai/settings/keys",
-    keyPlaceholder: "sk-or-v1-...",
-  },
-  {
-    id: "openai",
-    label: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    keyUrl: "https://platform.openai.com/api-keys",
-    keyPlaceholder: "sk-...",
-  },
-  {
-    id: "zai",
-    label: "Z.ai",
-    baseUrl: "https://api.z.ai/api/paas/v4",
-    keyUrl: "https://z.ai/manage-apikey/apikey-list",
-    keyPlaceholder: "Your Z.ai API key",
-  },
-]
-
-export function getPreset(provider: AIProvider): AIProviderPreset {
-  return AI_PROVIDER_PRESETS.find(p => p.id === provider) || AI_PROVIDER_PRESETS[0]
+  apiFamily: AIProviderApiFamily
+  supportsJsonSchema: boolean
+  groundingStrategy: AIGroundingStrategy
 }
 
 export const AI_MODELS: AIModel[] = [
@@ -159,9 +138,78 @@ export const ZAI_MODELS: AIModel[] = [
   },
 ]
 
+export const KIMI_MODELS: AIModel[] = [
+  {
+    id: "k2p5",
+    label: "Kimi K2.5",
+    shortLabel: "K2.5",
+    description: "Kimi Code flagship model with image input",
+    supportsGrounding: false,
+  },
+  {
+    id: "kimi-k2-thinking",
+    label: "Kimi K2 Thinking",
+    shortLabel: "K2 Thinking",
+    description: "Reasoning-focused Kimi Code model",
+    supportsGrounding: false,
+  },
+]
+
+export const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    keyUrl: "https://openrouter.ai/settings/keys",
+    keyPlaceholder: "sk-or-v1-...",
+    apiFamily: "openai-completions",
+    supportsJsonSchema: true,
+    groundingStrategy: "openrouter-online",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    keyUrl: "https://platform.openai.com/api-keys",
+    keyPlaceholder: "sk-...",
+    apiFamily: "openai-completions",
+    supportsJsonSchema: true,
+    groundingStrategy: "openai-search-preview",
+  },
+  {
+    id: "zai",
+    label: "Z.ai",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    keyUrl: "https://z.ai/manage-apikey/apikey-list",
+    keyPlaceholder: "Your Z.ai API key",
+    apiFamily: "openai-completions",
+    supportsJsonSchema: false,
+    groundingStrategy: "none",
+  },
+  {
+    id: "kimi-coding",
+    label: "Kimi Code",
+    baseUrl: "https://api.kimi.com/coding",
+    keyUrl: "https://www.kimi.com/coding/docs/en/",
+    keyPlaceholder: "sk-kimi-...",
+    apiFamily: "anthropic-messages",
+    supportsJsonSchema: false,
+    groundingStrategy: "none",
+  },
+]
+
+export function getPreset(provider: AIProvider): AIProviderPreset {
+  return AI_PROVIDER_PRESETS.find(p => p.id === provider) || AI_PROVIDER_PRESETS[0]
+}
+
+export function getProviderApiFamily(provider: AIProvider): AIProviderApiFamily {
+  return getPreset(provider).apiFamily
+}
+
 export function getModelsForProvider(provider: AIProvider): AIModel[] {
   if (provider === "openai") return OPENAI_MODELS
   if (provider === "zai")    return ZAI_MODELS
+  if (provider === "kimi-coding") return KIMI_MODELS
   return AI_MODELS // openrouter + safe fallback for any stale localStorage value
 }
 
@@ -199,6 +247,7 @@ export interface AIConfig {
   supportsGrounding: boolean
   provider: AIProvider
   customBaseUrl: string
+  apiFamily: AIProviderApiFamily
 }
 
 export function loadAIConfig(): AIConfig | null {
@@ -206,17 +255,24 @@ export function loadAIConfig(): AIConfig | null {
   if (!s.apiKey) return null
   const models = getModelsForProvider(s.provider)
   const model = models.find(m => m.id === s.modelId)
+  const preset = getPreset(s.provider)
   // Use the matched model's id if found; otherwise fall back to the first model
   // for this provider.  This handles the case where localStorage still holds an
   // OpenRouter-prefixed id (e.g. "openai/gpt-4o") after switching to OpenAI —
   // that string won't match any entry in OPENAI_MODELS so we fall back to "gpt-4o".
   const modelId = model?.id ?? models[0]?.id ?? s.modelId ?? DEFAULT_MODEL_ID
-  // Z.ai does not support grounding; only openrouter and openai do
   const supportsGrounding =
-    (s.provider === "openrouter" || s.provider === "openai") &&
+    preset.groundingStrategy !== "none" &&
     s.webGrounding &&
     (model?.supportsGrounding ?? false)
-  return { apiKey: s.apiKey, modelId, supportsGrounding, provider: s.provider, customBaseUrl: s.customBaseUrl }
+  return {
+    apiKey: s.apiKey,
+    modelId,
+    supportsGrounding,
+    provider: s.provider,
+    customBaseUrl: s.customBaseUrl,
+    apiFamily: preset.apiFamily,
+  }
 }
 
 export function getBaseUrl(config: AIConfig): string {
@@ -224,13 +280,19 @@ export function getBaseUrl(config: AIConfig): string {
 }
 
 export function getProviderHeaders(config: AIConfig): Record<string, string> {
-  const base: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${config.apiKey}`,
-  }
-  if (config.provider === "openrouter") {
-    base["HTTP-Referer"] = "https://nodepad.space"
-    base["X-Title"] = "nodepad"
+  const base: Record<string, string> = { "Content-Type": "application/json" }
+
+  if (config.apiFamily === "anthropic-messages") {
+    base["Accept"] = "application/json"
+    base["x-api-key"] = config.apiKey
+    base["anthropic-version"] = "2023-06-01"
+    base["anthropic-dangerous-direct-browser-access"] = "true"
+  } else {
+    base["Authorization"] = `Bearer ${config.apiKey}`
+    if (config.provider === "openrouter") {
+      base["HTTP-Referer"] = "https://nodepad.space"
+      base["X-Title"] = "nodepad"
+    }
   }
   return base
 }

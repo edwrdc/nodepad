@@ -22,6 +22,7 @@ import {
 import {
   AI_PROVIDER_PRESETS,
   getModelsForProvider,
+  getProviderApiFamily,
   getPreset,
   type AISettings,
   type AIProvider,
@@ -118,8 +119,10 @@ export function ProjectSidebar({
   }
 
   const currentPreset = getPreset(draft.provider)
+  const currentApiFamily = getProviderApiFamily(draft.provider)
   const models = getModelsForProvider(draft.provider)
   const selectedModel = models.find(m => m.id === draft.modelId) || models[0] || undefined
+  const canShowGrounding = currentPreset.groundingStrategy !== "none"
 
   return (
     <div
@@ -359,7 +362,7 @@ export function ProjectSidebar({
                     </button>
                   </div>
                   <p className="font-mono text-[9px] text-muted-foreground leading-relaxed">
-                    Stored locally. Never sent to a server.{" "}
+                    Stored locally and used for direct {currentApiFamily === "anthropic-messages" ? "Anthropic-style" : "provider"} API requests.{" "}
                     {currentPreset.keyUrl && (
                       <a href={currentPreset.keyUrl} target="_blank" rel="noopener noreferrer"
                         className="text-primary underline hover:brightness-125 transition-all">
@@ -425,7 +428,7 @@ export function ProjectSidebar({
                                   <div className="font-mono text-[10px] font-bold text-foreground">{model.label}</div>
                                   <div className="font-mono text-[9px] text-muted-foreground">{model.description}</div>
                                 </div>
-                                {model.supportsGrounding && (draft.provider === "openrouter" || draft.provider === "openai") && <Globe className="ml-auto h-3 w-3 shrink-0 text-primary/50" />}
+                                {model.supportsGrounding && canShowGrounding && <Globe className="ml-auto h-3 w-3 shrink-0 text-primary/50" />}
                               </button>
                             ))}
                           </motion.div>
@@ -435,8 +438,8 @@ export function ProjectSidebar({
                   )}
                 </div>
 
-                {/* Web Grounding (OpenRouter + OpenAI) */}
-                {(draft.provider === "openrouter" || draft.provider === "openai") && selectedModel && (
+                {/* Web Grounding */}
+                {canShowGrounding && selectedModel && (
                   <div className="flex items-start justify-between gap-3 rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-2.5">
                     <div className="flex items-start gap-2">
                       <Globe className="h-3.5 w-3.5 mt-0.5 text-primary/60 shrink-0" />
@@ -444,7 +447,7 @@ export function ProjectSidebar({
                         <div className="font-mono text-[11px] font-bold text-foreground">Web Grounding</div>
                         <div className="font-mono text-[9px] text-muted-foreground mt-0.5 leading-relaxed">
                           {selectedModel.supportsGrounding
-                            ? draft.provider === "openai"
+                            ? currentPreset.groundingStrategy === "openai-search-preview"
                               ? `Uses ${selectedModel.groundingModelId ?? "search-preview"} for live web access`
                               : "Adds :online for live search"
                             : "Not available for this model"}

@@ -1,6 +1,7 @@
 "use client"
 
-import { loadAIConfig, getBaseUrl, getProviderHeaders } from "@/lib/ai-settings"
+import { loadAIConfig } from "@/lib/ai-settings"
+import { requestAIText } from "@/lib/ai-client"
 
 export interface GhostContext {
   text: string
@@ -50,33 +51,14 @@ ${context.map(c =>
 Return ONLY valid JSON:
 {"text": "...", "category": "..."}`
 
-  const baseUrl = getBaseUrl(config)
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: getProviderHeaders(config),
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-      temperature: 0.7,
-    }),
+  const { text: rawContent } = await requestAIText({
+    config,
+    model,
+    messages: [{ role: "user", content: prompt }],
+    responseFormat: { type: "json_object" },
+    temperature: 0.7,
+    maxOutputTokens: 512,
   })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`AI ghost error (${config.provider}) ${response.status}: ${err}`)
-  }
-
-  let data: Record<string, unknown>
-  try {
-    data = await response.json()
-  } catch {
-    throw new Error(
-      `AI ghost error (${config.provider}): response was not valid JSON. The provider may have timed out or returned a truncated response.`
-    )
-  }
-  const rawContent = (data.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content
-  if (!rawContent) throw new Error("No content in AI response")
 
   // Defensive parse
   try {
